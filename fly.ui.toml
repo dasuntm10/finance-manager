@@ -1,0 +1,26 @@
+app = "finance-manager-ui"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.ui"
+
+[env]
+  PORT = "8501"
+
+[[services]]
+  internal_port = 8501
+  protocol = "tcp"
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [services.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25
+

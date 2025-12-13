@@ -1,0 +1,43 @@
+[project]
+name = "finance-manager"
+version = "0.1.0"
+description = "Agentic personal finance assistant (FastAPI + LangGraph + Streamlit)"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "langgraph>=0.2.34",
+    "litellm>=1.52.0",
+    "openai>=1.50.2",
+    "huggingface-hub>=0.24.6",
+    "httpx>=0.27.0",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.3.0",
+    "python-multipart>=0.0.9",
+    "qdrant-client>=1.9.1",
+    "redis>=5.0.4",
+    "psycopg[binary,pool]>=3.1.18",
+    "beautifulsoup4>=4.12.3",
+    "playwright>=1.45.0",
+    "streamlit>=1.37.0",
+    "pandas>=2.2.2",
+    "plotly>=5.22.0",
+    "jinja2>=3.1.4",
+    "tenacity>=8.5.0",
+    "structlog>=24.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.6",
+]
+
+[project.scripts]
+finance-manager-api = "finance_manager.api.main:run"
+finance-manager-ui = "finance_manager.ui.app:main"
+
+[tool.uv]
+package = true
+
+

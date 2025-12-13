@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: finance-manager-api
+    env: docker
+    plan: free
+    dockerfilePath: Dockerfile.api
+    envVars:
+      - key: PORT
+        value: 8000
+  - type: web
+    name: finance-manager-ui
+    env: docker
+    plan: free
+    dockerfilePath: Dockerfile.ui
+    envVars:
+      - key: PORT
+        value: 8501
+
