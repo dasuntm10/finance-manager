@@ -22,3 +22,4 @@ EXPOSE 8501
 
 CMD ["sh", "-c", "uv run streamlit run finance_manager/ui/app.py --server.port ${PORT:-8501} --server.address 0.0.0.0"]
 
+
