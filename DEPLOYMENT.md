@@ -1,6 +1,6 @@
 # Deployment
 
-Deployment options for the Agentic Finance Manager: Fly.io (recommended), Render, or a self-hosted VM with Docker Compose, plus managed Postgres (Supabase/Neon) and optional Qdrant.
+Low-cost deployment options for the Agentic Finance Manager: Fly.io (recommended), Render, or a self-hosted VM with Docker Compose, plus managed Postgres (Supabase/Neon) and optional Qdrant.
 
 ## Components
 - API: FastAPI + LangGraph (`Dockerfile.api`, listens on `${PORT:-8000}`)

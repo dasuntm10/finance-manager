@@ -12,6 +12,9 @@ class Settings(BaseSettings):
 
     app_name: str = "Agentic Finance Manager"
     environment: str = Field(default="development")
+    # LLM provider and model settings live in config/llm.yaml
+    # (see finance_manager.llm_config). LLM_MODEL still works as an override
+    # of the active provider's model string for backward compatibility.
     llm_model: str = Field(default="gemini-2.5-flash", alias="LLM_MODEL")
 
     database_url: str = Field(default="postgresql+psycopg://user:pass@localhost:5432/finance", alias="DATABASE_URL")

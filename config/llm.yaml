@@ -1,0 +1,38 @@
+# LLM provider configuration
+#
+# This file controls which LLM the app uses and the per-model call settings.
+# To switch providers (for example from Gemini to Anthropic), change
+# "active_provider" below, or set the LLM_PROVIDER environment variable to
+# override it without editing this file.
+#
+# API keys are NOT stored here. Each provider names the environment variable
+# that holds its key (see "api_key_env"); set that variable in your .env or
+# deployment secrets:
+#   GEMINI_API_KEY     for the gemini provider
+#   ANTHROPIC_API_KEY  for the anthropic provider
+#
+# Model strings use liteLLM's "<provider>/<model>" format so liteLLM routes
+# the call to the right backend.
+
+active_provider: gemini
+
+providers:
+  gemini:
+    # Google AI Studio models use the "gemini/" prefix.
+    model: gemini/gemini-2.5-flash
+    api_key_env: GEMINI_API_KEY
+    # Model settings passed through to liteLLM.completion().
+    params:
+      temperature: 0.2
+      max_tokens: 1024
+
+  anthropic:
+    # Anthropic models use the "anthropic/" prefix.
+    # Haiku 4.5 is a fast, low-cost fit for SMS parsing / categorization.
+    # Swap for "anthropic/claude-sonnet-4-6" (stronger reasoning) or
+    # "anthropic/claude-opus-4-8" (most capable) as needed.
+    model: anthropic/claude-haiku-4-5
+    api_key_env: ANTHROPIC_API_KEY
+    params:
+      temperature: 0.2
+      max_tokens: 1024

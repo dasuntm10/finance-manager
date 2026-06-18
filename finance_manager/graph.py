@@ -12,12 +12,8 @@ import httpx
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
-try:
-    from litellm import completion
-except Exception:  # pragma: no cover - litellm is optional at runtime
-    completion = None
-
 from finance_manager.config import Settings, get_settings
+from finance_manager.llm import complete as llm_complete
 from finance_manager.db import FinanceRepository, get_repository
 from finance_manager.logger import logger
 from finance_manager.schemas import (
@@ -96,15 +92,9 @@ def _categorize(tx: Transaction, categories: List[str]) -> str:
     return categories[0] if categories else "Other"
 
 
-def _maybe_call_llm(prompt: str, settings: Settings) -> Optional[str]:
-    if completion is None:
-        return None
-    try:
-        resp = completion(model=settings.llm_model, messages=[{"role": "user", "content": prompt}])
-        return resp["choices"][0]["message"]["content"]
-    except Exception as err:  # pragma: no cover - LLM is best-effort
-        logger.warning("llm_failed", error=str(err))
-        return None
+def _maybe_call_llm(prompt: str, settings: Optional[Settings] = None) -> Optional[str]:
+    # Model and provider are resolved from config/llm.yaml (see finance_manager.llm).
+    return llm_complete(prompt)
 
 
 async def _search_via_http(settings: Settings, query: str, request_id: str, limit: int = 5) -> List[Dict[str, Any]]:

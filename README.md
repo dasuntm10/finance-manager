@@ -83,7 +83,7 @@ finance_manager/
 
 ## Deployment
 
-Deployment information for Fly.io, Render, and self-hosted Docker are in [`DEPLOYMENT.md`](DEPLOYMENT.md).
+Deployment guides for Fly.io, Render, and self-hosted Docker are in [`DEPLOYMENT.md`](DEPLOYMENT.md).
 
 ## Status
 
