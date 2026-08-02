@@ -41,4 +41,13 @@ finance-manager-ui = "finance_manager.ui.app:main"
 [tool.uv]
 package = true
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Async tests are plain `async def`; no per-test marker needed.
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
 from finance_manager.schemas import Budget, Transaction
@@ -27,50 +27,61 @@ class FinanceRepository:
         raise NotImplementedError
 
 
+def transaction_fingerprint(tx: Transaction) -> Tuple[str, str, float, str, str]:
+    """Build the identity key used to recognize an already-stored transaction.
+
+    ``source_doc_id`` carries the email Message-ID on the email path, which makes
+    re-fetching the same mailbox idempotent. It is included alongside the amount,
+    merchant and timestamp rather than used alone because a single PDF document
+    id is shared by every transaction extracted from that statement.
+    """
+    return (
+        tx.user_id,
+        tx.source_doc_id or "",
+        round(float(tx.amount), 2),
+        (tx.merchant_name_raw or "").strip().lower(),
+        tx.timestamp.isoformat(),
+    )
+
+
 class InMemoryRepository(FinanceRepository):
     """Simple in-memory store to keep the prototype runnable without external services."""
 
     def __init__(self) -> None:
-        self._transactions: List[Transaction] = []
+        # Keyed by transaction id, with a fingerprint index alongside so upserts
+        # are O(1) rather than a full scan per incoming transaction.
+        self._transactions: Dict[str, Transaction] = {}
+        self._fingerprints: Dict[Tuple[str, str, float, str, str], str] = {}
         self._budgets: Dict[str, Budget] = {}
 
     async def upsert_transactions(self, transactions: Sequence[Transaction]) -> List[Transaction]:
         saved: List[Transaction] = []
         for tx in transactions:
-            tx_id = tx.id or str(uuid4())
-            tx = tx.copy(update={"id": tx_id})
-            # naive dedupe by merchant+amount+timestamp
-            exists = next(
-                (
-                    existing
-                    for existing in self._transactions
-                    if existing.user_id == tx.user_id
-                    and existing.amount == tx.amount
-                    and existing.timestamp == tx.timestamp
-                    and existing.merchant_name_raw == tx.merchant_name_raw
-                ),
-                None,
-            )
-            if exists:
-                self._transactions.remove(exists)
-            self._transactions.append(tx)
-            saved.append(tx)
+            fingerprint = transaction_fingerprint(tx)
+            existing_id = self._fingerprints.get(fingerprint)
+            # Reuse the stored id on a repeat so downstream references stay valid.
+            tx_id = existing_id or tx.id or str(uuid4())
+            stored = tx.model_copy(update={"id": tx_id})
+            self._transactions[tx_id] = stored
+            self._fingerprints[fingerprint] = tx_id
+            saved.append(stored)
         return saved
 
     async def list_transactions(
         self, user_id: str, start: Optional[datetime] = None, end: Optional[datetime] = None
     ) -> List[Transaction]:
-        results = [tx for tx in self._transactions if tx.user_id == user_id]
+        results = [tx for tx in self._transactions.values() if tx.user_id == user_id]
         if start:
             results = [tx for tx in results if tx.timestamp >= start]
         if end:
             results = [tx for tx in results if tx.timestamp <= end]
+        results.sort(key=lambda tx: tx.timestamp)
         return results
 
     async def set_budget(self, budget: Budget) -> Budget:
         key = f"{budget.user_id}:{budget.month}"
         if budget.id is None:
-            budget = budget.copy(update={"id": str(uuid4())})
+            budget = budget.model_copy(update={"id": str(uuid4())})
         self._budgets[key] = budget
         return budget
 
@@ -79,7 +90,7 @@ class InMemoryRepository(FinanceRepository):
 
     async def summarize_by_category(self, user_id: str) -> Dict[str, float]:
         totals: Dict[str, float] = defaultdict(float)
-        for tx in self._transactions:
+        for tx in self._transactions.values():
             if tx.user_id != user_id:
                 continue
             cat = tx.category or "Uncategorized"

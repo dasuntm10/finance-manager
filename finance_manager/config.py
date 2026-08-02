@@ -36,6 +36,28 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
     hf_token: Optional[str] = Field(default=None, alias="HF_TOKEN")
 
+    # Email ingestion (IMAP). Mailboxes are opened read-only, so ingestion never
+    # marks messages as seen. Use a provider app password, not the account
+    # password, where the provider supports one.
+    imap_host: Optional[str] = Field(default=None, alias="IMAP_HOST")
+    imap_port: int = Field(default=993, alias="IMAP_PORT")
+    imap_username: Optional[str] = Field(default=None, alias="IMAP_USERNAME")
+    imap_password: Optional[str] = Field(default=None, alias="IMAP_PASSWORD")
+    imap_folder: str = Field(default="INBOX", alias="IMAP_FOLDER")
+    imap_use_ssl: bool = Field(default=True, alias="IMAP_USE_SSL")
+    # How far back a fetch looks, and the cap on messages per fetch.
+    email_since_days: int = Field(default=30, alias="EMAIL_SINCE_DAYS")
+    email_fetch_limit: int = Field(default=200, alias="EMAIL_FETCH_LIMIT")
+    # Addresses or domains allowed to produce transactions. Empty accepts all.
+    email_allowed_senders: List[str] = Field(default_factory=list)
+
+    # Budget alerting: fraction of a limit at which a warning is raised.
+    budget_warn_threshold: float = Field(default=0.8, alias="BUDGET_WARN_THRESHOLD")
+    # Charges needed before a merchant is treated as a recurring series.
+    recurring_min_occurrences: int = Field(default=3, alias="RECURRING_MIN_OCCURRENCES")
+    # Lookahead window for the "upcoming charges" list, in days.
+    recurring_upcoming_days: int = Field(default=14, alias="RECURRING_UPCOMING_DAYS")
+
     default_currency: str = "USD"
     default_categories: List[str] = Field(
         default_factory=lambda: [
