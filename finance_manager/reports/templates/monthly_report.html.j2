@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monthly report {{ report.month }}</title>
+<style>
+  :root {
+    --ink: #17181c;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --surface: #ffffff;
+    --page: #f6f7f9;
+    --accent: #2f6feb;
+    --critical: #c02a2a;
+    --warning: #b26a00;
+    --ok: #17803d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px 20px 64px;
+    background: var(--page);
+    color: var(--ink);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .sheet { max-width: 860px; margin: 0 auto; }
+  header { margin-bottom: 24px; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  section {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin-bottom: 16px;
+  }
+  h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--muted);
+    margin: 0 0 14px;
+    font-weight: 600;
+  }
+  .kpis { display: flex; flex-wrap: wrap; gap: 12px; }
+  .kpi {
+    flex: 1 1 150px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .kpi .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .kpi .value { font-size: 20px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .kpi .delta { font-size: 12px; margin-top: 2px; }
+  .up { color: var(--critical); }
+  .down { color: var(--ok); }
+  .narrative { font-size: 16px; line-height: 1.6; margin: 0; }
+  ul.highlights { margin: 0; padding-left: 18px; }
+  ul.highlights li { margin-bottom: 7px; }
+  .alert {
+    border-left: 3px solid var(--line);
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    background: #fafafa;
+    border-radius: 0 6px 6px 0;
+    font-size: 14px;
+  }
+  .alert.critical { border-left-color: var(--critical); }
+  .alert.warning { border-left-color: var(--warning); }
+  .alert.info { border-left-color: var(--accent); }
+  .alert .tag {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    margin-right: 8px;
+  }
+  .alert.critical .tag { color: var(--critical); }
+  .alert.warning .tag { color: var(--warning); }
+  .alert.info .tag { color: var(--accent); }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+  th {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  .bar { height: 6px; border-radius: 3px; background: var(--accent); min-width: 2px; }
+  .bar-cell { width: 130px; }
+  .bar-track { background: var(--line); border-radius: 3px; }
+  .pill {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+  }
+  .pill.over { color: var(--critical); border-color: var(--critical); }
+  .pill.warning { color: var(--warning); border-color: var(--warning); }
+  .pill.ok { color: var(--ok); border-color: var(--ok); }
+  .empty { color: var(--muted); font-size: 14px; margin: 0; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 24px; }
+  @media print {
+    body { background: #fff; padding: 0; }
+    section { break-inside: avoid; border-radius: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <header>
+    <h1>Monthly report {{ report.month }}</h1>
+    <div class="sub">
+      {{ report.user_id }} &middot; generated {{ report.generated_at | nice_date("%d %b %Y %H:%M") }} UTC
+    </div>
+  </header>
+
+  <section>
+    <h2>Overview</h2>
+    <div class="kpis">
+      <div class="kpi">
+        <div class="label">Total spend</div>
+        <div class="value">{{ report.total_spent | money(report.currency) }}</div>
+        {% if report.change_pct is not none %}
+        <div class="delta {{ 'up' if report.change_pct > 0 else 'down' }}">
+          {{ report.change_pct | signed_pct(1) }} vs previous month
+        </div>
+        {% endif %}
+      </div>
+      <div class="kpi">
+        <div class="label">Transactions</div>
+        <div class="value">{{ report.transaction_count }}</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Daily average</div>
+        <div class="value">{{ report.daily_average | money(report.currency) }}</div>
+      </div>
+      {% if report.budget and report.budget.has_budget %}
+      <div class="kpi">
+        <div class="label">Budget used</div>
+        <div class="value">
+          {{ (report.budget.total_utilization * 100) | pct(0) if report.budget.total_utilization is not none else "n/a" }}
+        </div>
+        <div class="delta">limit {{ report.budget.total_limit | money(report.currency) }}</div>
+      </div>
+      {% endif %}
+      {% if report.recurring.active_count %}
+      <div class="kpi">
+        <div class="label">Recurring per month</div>
+        <div class="value">{{ report.recurring.monthly_total | money(report.currency) }}</div>
+        <div class="delta">{{ report.recurring.active_count }} active</div>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if report.narrative %}
+  <section>
+    <h2>Summary</h2>
+    <p class="narrative">{{ report.narrative }}</p>
+  </section>
+  {% endif %}
+
+  {% if report.highlights %}
+  <section>
+    <h2>Highlights</h2>
+    <ul class="highlights">
+      {% for item in report.highlights %}
+      <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if report.budget and report.budget.alerts %}
+  <section>
+    <h2>Budget alerts</h2>
+    {% for alert in report.budget.alerts %}
+    <div class="alert {{ alert.severity }}">
+      <span class="tag">{{ alert.severity }}</span>{{ alert.message }}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <section>
+    <h2>Spend by category</h2>
+    {% if report.categories %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th class="num">Amount</th>
+            <th class="num">Share</th>
+            <th class="bar-cell"></th>
+            <th class="num">Previous</th>
+            <th class="num">Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in report.categories %}
+          <tr>
+            <td>{{ line.category }}</td>
+            <td class="num">{{ line.amount | money }}</td>
+            <td class="num">{{ (line.share * 100) | pct(0) }}</td>
+            <td class="bar-cell">
+              <div class="bar-track">
+                <div class="bar" style="width: {{ (line.share * 100) | round(1) }}%"></div>
+              </div>
+            </td>
+            <td class="num">{{ line.previous_amount | money }}</td>
+            <td class="num">{{ line.change_pct | signed_pct(0) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty">No transactions recorded for this month.</p>
+    {% endif %}
+  </section>
+
+  {% if report.budget and report.budget.has_budget %}
+  <section>
+    <h2>Budget by category</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th class="num">Spent</th>
+            <th class="num">Limit</th>
+            <th class="num">Remaining</th>
+            <th class="num">Projected</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in report.budget.categories %}
+          <tr>
+            <td>{{ line.category }}</td>
+            <td class="num">{{ line.spent | money }}</td>
+            <td class="num">{{ line.limit | money }}</td>
+            <td class="num">{{ line.remaining | money }}</td>
+            <td class="num">{{ line.projected_spend | money }}</td>
+            <td><span class="pill {{ line.status }}">{{ line.status }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if report.top_merchants %}
+  <section>
+    <h2>Top merchants</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th class="num">Amount</th>
+            <th class="num">Charges</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in report.top_merchants %}
+          <tr>
+            <td>{{ line.merchant }}</td>
+            <td class="num">{{ line.amount | money }}</td>
+            <td class="num">{{ line.transactions }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if report.recurring.total_series %}
+  <section>
+    <h2>Recurring charges</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th>Cadence</th>
+            <th class="num">Typical</th>
+            <th class="num">Latest</th>
+            <th class="num">Per month</th>
+            <th>Next</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for series in report.recurring.series %}
+          <tr>
+            <td>{{ series.merchant_label }}</td>
+            <td>{{ series.cadence }}</td>
+            <td class="num">{{ series.typical_amount | money }}</td>
+            <td class="num">
+              {{ series.last_amount | money }}
+              {% if series.amount_change_pct is not none %}
+              <span class="{{ 'up' if series.amount_change_pct > 0 else 'down' }}">
+                ({{ series.amount_change_pct | signed_pct(0) }})
+              </span>
+              {% endif %}
+            </td>
+            <td class="num">{{ series.monthly_cost | money }}</td>
+            <td>
+              {% if series.status == "lapsed" %}
+              <span class="pill">lapsed</span>
+              {% else %}
+              {{ series.next_expected | nice_date }}
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if report.recurring.price_increases %}
+    <p class="empty" style="margin-top:12px">
+      {{ report.recurring.price_increases | length }} recurring charge(s) went up in price recently.
+    </p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <footer>Agentic Finance Manager &middot; figures computed from stored transactions</footer>
+</div>
+</body>
+</html>

@@ -1,30 +1,48 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
 import httpx
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Send
 
+from finance_manager.analysis.budget_alerts import evaluate_budget, month_bounds
+from finance_manager.analysis.recurring import detect_recurring, summarize_recurring
 from finance_manager.config import Settings, get_settings
+from finance_manager.ingestion.email_client import emails_to_transactions, fetch_emails
 from finance_manager.llm import complete as llm_complete
 from finance_manager.db import FinanceRepository, get_repository
 from finance_manager.logger import logger
+from finance_manager.reports.builder import build_monthly_report
 from finance_manager.schemas import (
     AnalyticsResponse,
-    Budget,
+    EmailMessage,
     FinanceState,
     PriceCompareResult,
     ResearchResult,
     Transaction,
 )
 from finance_manager.vector_store import VectorStore, get_vector_store
+
+
+# Task types accepted by the router, in the order they appear in the graph.
+TASK_TYPES = (
+    "sms_batch",
+    "email_batch",
+    "pdf_upload",
+    "analytics",
+    "budget",
+    "recurring",
+    "report",
+    "price_compare",
+    "research",
+)
 
 
 # ---------------------------
@@ -57,7 +75,9 @@ def _ensure_request_id(state: FinanceState) -> str:
 
 def _log_step(step: str, event: str, state: FinanceState, **extra: Any) -> None:
     request_id = _ensure_request_id(state)
-    logger.info("graph_step", request_id=request_id, step=step, event=event, **extra)
+    # structlog takes the log message itself as "event", so the node's start or
+    # end marker is passed as "phase" to avoid colliding with it.
+    logger.info("graph_step", request_id=request_id, step=step, phase=event, **extra)
 
 
 def _normalize_sender(sender: str) -> str:
@@ -159,12 +179,54 @@ def make_router_node(settings: Settings) -> Callable[[FinanceState], Dict[str, A
     def router(state: FinanceState) -> Dict[str, Any]:
         _log_step("router", "start", state)
         task = state.get("task_type") or state.get("input_type")
-        if task not in {"sms_batch", "pdf_upload", "analytics", "price_compare", "research"}:
+        if task not in TASK_TYPES:
+            # Raised rather than recorded: an unroutable task cannot proceed, and
+            # the API surfaces it as a 400 instead of an empty success payload.
             raise ValueError(f"Unsupported task_type: {task}")
         _log_step("router", "end", state, route=task)
         return {"task_type": task}
 
     return router
+
+
+def make_email_ingestion_node(settings: Settings) -> Callable[[FinanceState], FinanceState]:
+    async def email_ingestion(state: FinanceState) -> FinanceState:
+        _log_step("email_ingestion", "start", state)
+        user_id = _ensure_user_id(state)
+        raw = state.get("raw_input") or {}
+
+        supplied = raw.get("messages")
+        if supplied:
+            # Pre-supplied messages let callers replay a mailbox without IMAP.
+            messages = [
+                EmailMessage(**msg) if isinstance(msg, dict) else msg for msg in supplied
+            ]
+        else:
+            # IMAP is blocking, so it runs in a worker thread to keep the event
+            # loop free while the mailbox is read.
+            messages = await asyncio.to_thread(
+                fetch_emails,
+                settings,
+                raw.get("since_days"),
+                raw.get("limit"),
+                raw.get("folder"),
+            )
+
+        parsed = emails_to_transactions(
+            messages, user_id=user_id, default_currency=settings.default_currency
+        )
+        state["email_messages"] = [msg.model_dump() for msg in messages]
+        state["parsed_transactions"] = parsed
+        _log_step(
+            "email_ingestion",
+            "end",
+            state,
+            fetched=len(messages),
+            parsed=len(parsed),
+        )
+        return state
+
+    return email_ingestion
 
 
 def make_sms_ingestion_node(settings: Settings) -> Callable[[FinanceState], FinanceState]:
@@ -311,7 +373,7 @@ def make_categorization_node(settings: Settings) -> Callable[[FinanceState], Fin
             cat = tx.category
             if not cat:
                 cat = _categorize(tx, settings.default_categories)
-            tx = tx.copy(update={"category": cat})
+            tx = tx.model_copy(update={"category": cat})
             results.append(tx)
         state["parsed_transactions"] = [tx.model_dump() for tx in results]
         _log_step("categorization", "end", state, transactions=len(results))
@@ -332,23 +394,112 @@ def make_persistence_node(repo: FinanceRepository) -> Callable[[FinanceState], F
     return persist
 
 
-def make_budget_node(repo: FinanceRepository) -> Callable[[FinanceState], FinanceState]:
+def _target_month(state: FinanceState) -> str:
+    """Pick the month a budget check should evaluate.
+
+    An explicit month in the request wins. Otherwise, when the run just ingested
+    transactions, the month of the newest one is used so that importing a
+    historical statement reports against the month it belongs to rather than
+    against an empty current month.
+    """
+    raw = state.get("raw_input") or {}
+    if isinstance(raw, dict) and raw.get("month"):
+        return str(raw["month"])
+    timestamps: List[datetime] = []
+    for tx in state.get("parsed_transactions") or []:
+        value = tx.get("timestamp") if isinstance(tx, dict) else getattr(tx, "timestamp", None)
+        if isinstance(value, datetime):
+            timestamps.append(value)
+        elif isinstance(value, str):
+            try:
+                timestamps.append(datetime.fromisoformat(value))
+            except ValueError:
+                continue
+    if timestamps:
+        return _month_key(max(timestamps))
+    return _month_key(_now())
+
+
+def make_budget_node(settings: Settings, repo: FinanceRepository) -> Callable[[FinanceState], FinanceState]:
     async def budget(state: FinanceState) -> FinanceState:
-        # Best-effort budget summary, piggybacked on analytics
         _log_step("budget", "start", state)
         user_id = _ensure_user_id(state)
-        month = _month_key(_now())
-        budget = await repo.get_budget(user_id=user_id, month=month)
-        totals = defaultdict(float)
-        txs = await repo.list_transactions(user_id=user_id)
-        for tx in txs:
-            totals[tx.category or "Uncategorized"] += tx.amount
-        summary = {"month": month, "budget": budget.model_dump() if budget else None, "spend_by_category": dict(totals)}
-        state["analytics_result"] = summary
-        _log_step("budget", "end", state, categories=len(totals))
+        month = _target_month(state)
+        stored = await repo.get_budget(user_id=user_id, month=month)
+        start, end = month_bounds(month)
+        txs = await repo.list_transactions(
+            user_id=user_id, start=start, end=end - timedelta(microseconds=1)
+        )
+        status = evaluate_budget(
+            user_id=user_id,
+            month=month,
+            transactions=txs,
+            budget=stored,
+            now=_now(),
+            warn_threshold=settings.budget_warn_threshold,
+        )
+        state["budget_status"] = status.model_dump()
+        _log_step(
+            "budget",
+            "end",
+            state,
+            month=month,
+            alerts=len(status.alerts),
+            categories=len(status.categories),
+        )
         return state
 
     return budget
+
+
+def make_recurring_node(settings: Settings, repo: FinanceRepository) -> Callable[[FinanceState], FinanceState]:
+    async def recurring(state: FinanceState) -> FinanceState:
+        _log_step("recurring", "start", state)
+        user_id = _ensure_user_id(state)
+        raw = state.get("raw_input") or {}
+        # Cadence can only be established across months, so this always reads the
+        # full history rather than a date window.
+        txs = await repo.list_transactions(user_id=user_id)
+        series = detect_recurring(
+            txs,
+            min_occurrences=int(
+                raw.get("min_occurrences") or settings.recurring_min_occurrences
+            ),
+            now=_now(),
+        )
+        summary = summarize_recurring(
+            series,
+            upcoming_days=int(
+                raw.get("upcoming_days") or settings.recurring_upcoming_days
+            ),
+        )
+        state["recurring_series"] = [item.model_dump() for item in series]
+        state["recurring_summary"] = summary.model_dump()
+        _log_step("recurring", "end", state, series=len(series), active=summary.active_count)
+        return state
+
+    return recurring
+
+
+def make_report_node(settings: Settings, repo: FinanceRepository) -> Callable[[FinanceState], FinanceState]:
+    async def report(state: FinanceState) -> FinanceState:
+        _log_step("report", "start", state)
+        user_id = _ensure_user_id(state)
+        raw = state.get("raw_input") or {}
+        month = str(raw.get("month") or _month_key(_now()))
+        built = await build_monthly_report(
+            repo,
+            user_id=user_id,
+            month=month,
+            settings=settings,
+            now=_now(),
+            include_narrative=bool(raw.get("include_narrative", True)),
+        )
+        state["report_result"] = built.model_dump()
+        _log_step("report", "end", state, month=month, transactions=built.transaction_count)
+        return state
+
+    return report
 
 
 def make_analytics_node(repo: FinanceRepository) -> Callable[[FinanceState], FinanceState]:
@@ -431,15 +582,43 @@ def make_research_node(settings: Settings) -> Callable[[FinanceState], FinanceSt
     return research
 
 
-def make_error_handler() -> Callable[[FinanceState, Exception], FinanceState]:
-    def handle(state: FinanceState, err: Exception) -> FinanceState:
-        logger.error("graph_error", request_id=_ensure_request_id(state), error=str(err))
-        errors = state.get("errors") or []
-        errors.append(str(err))
-        state["errors"] = errors
-        return state
+def _record_error(node: str, state: FinanceState, err: Exception) -> Dict[str, Any]:
+    logger.error(
+        "graph_node_failed",
+        request_id=_ensure_request_id(state),
+        node=node,
+        error=str(err),
+        error_type=type(err).__name__,
+    )
+    errors = list(state.get("errors") or [])
+    errors.append(f"{node}: {err}")
+    return {"errors": errors}
 
-    return handle
+
+def guard_node(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a node so a failure is recorded in state instead of killing the run.
+
+    LangGraph has no graph-level error hook, so containment happens per node: a
+    node that raises appends to ``errors[]`` and the pipeline continues with
+    whatever state it already has. Callers should check ``errors`` on the result.
+    """
+    if inspect.iscoroutinefunction(fn):
+
+        async def async_wrapper(state: FinanceState) -> Any:
+            try:
+                return await fn(state)
+            except Exception as err:
+                return _record_error(name, state, err)
+
+        return async_wrapper
+
+    def wrapper(state: FinanceState) -> Any:
+        try:
+            return fn(state)
+        except Exception as err:
+            return _record_error(name, state, err)
+
+    return wrapper
 
 
 # ---------------------------
@@ -463,16 +642,26 @@ class FinanceGraphRunner:
     def _build_graph(self):
         g = StateGraph(FinanceState)
 
+        nodes: Dict[str, Callable[..., Any]] = {
+            "sms_ingestion": make_sms_ingestion_node(self.settings),
+            "email_ingestion": make_email_ingestion_node(self.settings),
+            "pdf_ingestion": make_pdf_ingestion_node(self.settings, self.vector_store),
+            "extraction": make_extraction_node(self.settings),
+            "categorization": make_categorization_node(self.settings),
+            "persistence": make_persistence_node(self.repo),
+            "budget": make_budget_node(self.settings, self.repo),
+            "recurring": make_recurring_node(self.settings, self.repo),
+            "report": make_report_node(self.settings, self.repo),
+            "analytics": make_analytics_node(self.repo),
+            "price_compare": make_price_compare_node(self.settings),
+            "research": make_research_node(self.settings),
+        }
+
+        # The router is intentionally unguarded: an unknown task type must fail
+        # loudly because there is no edge to follow.
         g.add_node("router", make_router_node(self.settings))
-        g.add_node("sms_ingestion", make_sms_ingestion_node(self.settings))
-        g.add_node("pdf_ingestion", make_pdf_ingestion_node(self.settings, self.vector_store))
-        g.add_node("extraction", make_extraction_node(self.settings))
-        g.add_node("categorization", make_categorization_node(self.settings))
-        g.add_node("persistence", make_persistence_node(self.repo))
-        g.add_node("budget", make_budget_node(self.repo))
-        g.add_node("analytics", make_analytics_node(self.repo))
-        g.add_node("price_compare", make_price_compare_node(self.settings))
-        g.add_node("research", make_research_node(self.settings))
+        for name, fn in nodes.items():
+            g.add_node(name, guard_node(name, fn))
 
         g.add_edge(START, "router")
         g.add_conditional_edges(
@@ -480,15 +669,21 @@ class FinanceGraphRunner:
             lambda state: state["task_type"],
             {
                 "sms_batch": "sms_ingestion",
+                "email_batch": "email_ingestion",
                 "pdf_upload": "pdf_ingestion",
                 "analytics": "analytics",
+                "budget": "budget",
+                "recurring": "recurring",
+                "report": "report",
                 "price_compare": "price_compare",
                 "research": "research",
             },
         )
 
-        # SMS / PDF ingestion chain
+        # Ingestion chains converge on the same extract, categorize, persist,
+        # then budget-check path.
         g.add_edge("sms_ingestion", "extraction")
+        g.add_edge("email_ingestion", "extraction")
         g.add_edge("pdf_ingestion", "extraction")
         g.add_edge("extraction", "categorization")
         g.add_edge("categorization", "persistence")
@@ -497,10 +692,11 @@ class FinanceGraphRunner:
 
         # Direct edges
         g.add_edge("analytics", END)
+        g.add_edge("recurring", END)
+        g.add_edge("report", END)
         g.add_edge("price_compare", END)
         g.add_edge("research", END)
 
-        g.set_error_handler(make_error_handler())
         return g.compile()
 
     async def arun(
@@ -514,15 +710,20 @@ class FinanceGraphRunner:
         if raw_input and isinstance(raw_input, dict):
             request_id = raw_input.get("request_id")
         request_id = request_id or str(uuid4())
+        # An explicit user_id always wins; the payload is only a fallback. The
+        # parenthesization matters, an unparenthesized ternary here silently
+        # dropped the explicit argument whenever raw_input was empty.
+        resolved_user = user_id or (raw_input or {}).get("user_id")
         state: FinanceState = {
             "task_type": task_type,
             "raw_input": raw_input or {},
             "files": files or [],
-            "user_id": user_id or raw_input.get("user_id") if raw_input else None,
+            "user_id": resolved_user,
             "request_id": request_id,
             "messages": [],
             "parsed_transactions": [],
             "parsed_documents": [],
+            "errors": [],
         }
         return await self.graph.ainvoke(state)
 
